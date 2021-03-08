@@ -25,7 +25,7 @@ class WaitingTime(nn.Module):
 
         # make transition
         if self.ising:  # flip spin i.e. 1->0 and 0->1
-            state = make_ising_transition(state, action[:,0], k=k)
+            state = make_ising_transition(state, action[:, None], k=k)
         else:
             state = make_particle_hop(state, action, rates.shape)
 
@@ -47,7 +47,7 @@ class MarkovChain(nn.Module):
     def forward(self, state, action, k=1):
         # make transition
         if self.ising:  # flip spin i.e. 1->0 and 0->1
-            state = make_ising_transition(state, action, k=k)
+            state = make_ising_transition(state, action[:, None], k=k)
         else:
             policy_shape = (state.shape[0], self.out_channels) + state.shape[-2:]
             state = make_particle_hop(state, action, policy_shape)
@@ -62,7 +62,7 @@ def make_adjacent_states(state, ising, out_channels):
     states = state.repeat_interleave(out_channels * L**2, dim=0)
     actions = torch.arange(out_channels * L**2).repeat(B)
     if ising:
-        states = make_ising_transition(states, actions)
+        states = make_ising_transition(states, actions[:, None])
     else:
         policy_shape = (states.shape[0], out_channels) + state.shape[-2:]
         states = make_particle_hop(states, actions, policy_shape)

@@ -163,7 +163,7 @@ class Agent:
         batch_size = state.shape[0]
         transition_probabilities = self.get_policy(state, Q=Q)
         action = transition_probabilities.view(batch_size, -1).multinomial(k, replacement=True)
-        return action
+        return action.squeeze()
 
     def get_rates(self, state, Q=None):
         """ Rates_fn following from Q. """
@@ -239,7 +239,7 @@ class Agent:
         traj = torch.empty((num_steps + 1,) + state.shape, device=state.device)
         dts = torch.empty((num_steps, state.shape[0]), device=state.device)
         actions = torch.empty((num_steps, state.shape[0], k),
-                              device=state.device, dtype=torch.long)
+                              device=state.device, dtype=torch.long).squeeze(dim=-1)
 
         B = state.shape[0]
 
@@ -255,9 +255,6 @@ class Agent:
                 actions[i] = self.get_action(state, Q=Q, k=k)
             policy = self.get_policy(state, Q=Q)
             rates = policy
-
-            if torch.isclose(policy, torch.tensor(0.0)).any():
-                raise Exception('nan')
 
             new_state = self.env.markov(state, actions[i], k=k)
 
@@ -280,20 +277,25 @@ class Agent:
                 rates_prob = rates / rates.sum(-1, keepdim=True)  # normalized transition probabilities
                 new_rates_prob = new_rates / new_rates.sum(-1, keepdim=True)
 
-                log_select_prob = 0.0
-                for kk in range(k):
-                    log_select_prob += torch.log(rates_prob[range(B), actions[i, :, kk]])  # select prob of chosen action
-
-                # unravel inverse action
                 ising = self.hparams.potential.startswith('ising')
                 if ising:
-                    # new_rates_prob = new_rates_prob[range(B), actions[i, :, 0]]
-                    new_log_select_prob = 0.0
-                    for kk in range(k):
-                        new_log_select_prob += torch.log(new_rates_prob[range(B), actions[i, :, kk]])  # select prob of chosen action
-                    # new_select_prob = 1
-                    # for kk in range(k):
-                    #     new_select_prob = new_select_prob * new_rates_prob[range(B), actions[i, :, kk]]  # select prob of chosen action
+                    if k > 1:
+                        log_select_prob = 0.0
+                        for kk in range(k):
+                            log_select_prob += torch.log(rates_prob[range(B), actions[i, :, kk]])  # select prob of chosen action
+                    else:
+                        log_select_prob = torch.log(rates_prob[range(B), actions[i]])
+                else:
+                    rates_prob = rates_prob[range(B), actions[i]]
+
+                # unravel inverse action
+                if ising:
+                    if k > 1:
+                        new_log_select_prob = 0.0
+                        for kk in range(k):
+                            new_log_select_prob += torch.log(new_rates_prob[range(B), actions[i, :, kk]])  # select prob of chosen action
+                    else:
+                        new_log_select_prob = torch.log(new_rates_prob[range(B), actions[i]])  # select prob of chosen action
                 else:
                     l, m, l_, m_, d = find_particle_position(actions[i], rates_shape, return_d=True)
                     # d = torch.fmod(d + 2, 4)  # inverse action
@@ -301,15 +303,12 @@ class Agent:
                     new_rates_prob = new_rates_prob[range(B), d, l, m]
 
                 # compute accepted transitions
-                # print(prob_accept.shape, new)
                 prob_accept = new_wave**2 / wave**2
-                prob_accept *= torch.exp(new_log_select_prob - log_select_prob)
-                # prob_accept *= new_rates_prob / rates_prob
-
-                # prob_accept *= new_select_prob / select_prob
-
-                if torch.isnan(prob_accept).any():
-                    raise Exception('nan')
+                if ising:
+                    prob_accept *= torch.exp(new_log_select_prob - log_select_prob)
+                else:
+                    prob_accept *= new_rates_prob / rates_prob
+                    # prob_accept *= new_select_prob / select_prob
 
                 prob_accept = torch.min(prob_accept, torch.ones_like(prob_accept))
                 self.model.prob_accept = prob_accept.mean()
@@ -367,7 +366,7 @@ class ReplayBuffer(torch.utils.data.Dataset):
         self.state_buffer[0:self.batch_size] = state
         
         self.action_buffer = self.action_buffer.roll(self.batch_size, 0)
-        self.action_buffer[0:self.batch_size] = action
+        self.action_buffer[0:self.batch_size] = action if (len(action.shape) == 1) else action[:, 0]
         
         self.reward_buffer = self.reward_buffer.roll(self.batch_size, 0)
         self.reward_buffer[0:self.batch_size] = reward
@@ -445,8 +444,8 @@ class QModel(pl.LightningModule):
             self.hparams.buffer_capacity, hparams.batch_size,
             self.env.state.shape[1:], self.hparams.epoch_size)
 
-        if False:
-        # if True:
+        # if False:
+        if True:
             self.populate('cpu')
     
     def forward(self, state):
@@ -461,7 +460,7 @@ class QModel(pl.LightningModule):
         """
         steps = math.ceil(self.buffer.capacity / self.hparams.batch_size)
         for i in range(steps):
-            print("Populate: step {i} of {steps}")
+            print(f"Populate: step {i} of {steps}")
             experience = self.agent.get_experience(1, device)
             self.buffer.save(experience)
 
@@ -484,9 +483,9 @@ class QModel(pl.LightningModule):
 
         with torch.no_grad():
             # Populate if necessary
-            # if not self.buffer.populated:
-            #     self.populate(device)
-            #     self.buffer.populated = True
+            if not self.buffer.populated:
+                self.populate(device)
+                self.buffer.populated = True
 
             # Update target network
             if self.global_step % self.hparams.sync_rate == 0:
