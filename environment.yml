@@ -1,4 +1,4 @@
-name: rl4qm
+name: lattice-quarl
 channels:
   - pytorch
   - defaults
